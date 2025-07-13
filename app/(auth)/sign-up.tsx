@@ -1,562 +1,565 @@
-import { useSignUp, useSSO } from "@clerk/clerk-expo";
-import * as AuthSession from "expo-auth-session";
-import { Link, useRouter } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
-import React, { useCallback, useEffect, useState } from "react";
+import { useSignUp } from "@clerk/clerk-expo";
+import { router } from "expo-router";
+import { useEffect, useState } from "react";
 import {
-  Alert,
+  ActivityIndicator,
+  Dimensions,
+  Keyboard,
   KeyboardAvoidingView,
-  Platform,
-  SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from "react-native";
-import { AuthStrategy, OAuthStrategy } from "../../types/auth";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-export const useWarmUpBrowser = () => {
+const { height } = Dimensions.get("window");
+const isSmallDevice = height < 812;
+
+type SignUpStep = "details" | "credentials" | "verification";
+
+export default function SignUp() {
+  const { isLoaded, signUp, setActive } = useSignUp();
+  const [currentStep, setCurrentStep] = useState<SignUpStep>("details");
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  // Form data
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+
+  // Validation
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
   useEffect(() => {
-    // Preloads the browser for Android devices to reduce authentication load time
-    // See: https://docs.expo.dev/guides/authentication/#improving-user-experience
-    void WebBrowser.warmUpAsync();
+    const keyboardDidShowListener = Keyboard.addListener(
+      "keyboardWillShow",
+      () => setKeyboardVisible(true)
+    );
+    const keyboardDidHideListener = Keyboard.addListener(
+      "keyboardWillHide",
+      () => setKeyboardVisible(false)
+    );
     return () => {
-      // Cleanup: closes browser when component unmounts
-      void WebBrowser.coolDownAsync();
+      keyboardDidShowListener.remove();
+      keyboardDidHideListener.remove();
     };
   }, []);
-};
 
-// Handle any pending authentication sessions
-WebBrowser.maybeCompleteAuthSession();
+  const validateDetailsStep = (): boolean => {
+    const errors: Record<string, string> = {};
 
-export default function SignUpScreen() {
-  useWarmUpBrowser();
+    if (!firstName.trim()) errors.firstName = "First name is required";
+    if (!lastName.trim()) errors.lastName = "Last name is required";
+    if (!username.trim()) {
+      errors.username = "Username is required";
+    } else if (username.length < 3) {
+      errors.username = "Username must be at least 3 characters";
+    } else if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      errors.username =
+        "Username can only contain letters, numbers, and underscores";
+    }
 
-  const { isLoaded, signUp, setActive } = useSignUp();
-  const { startSSOFlow } = useSSO();
-  const router = useRouter();
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
 
-  const [emailAddress, setEmailAddress] = React.useState("");
-  const [password, setPassword] = React.useState("");
-  const [firstName, setFirstName] = React.useState("");
-  const [lastName, setLastName] = React.useState("");
-  const [username, setUsername] = React.useState("");
-  const [pendingVerification, setPendingVerification] = React.useState(false);
-  const [code, setCode] = React.useState("");
+  const validateCredentialsStep = (): boolean => {
+    const errors: Record<string, string> = {};
 
-  // OAuth completion state - properly typed
-  const [oauthSignUp, setOauthSignUp] = useState<any>(null);
-  const [oauthFirstName, setOauthFirstName] = useState("");
-  const [oauthLastName, setOauthLastName] = useState("");
-  const [oauthUsername, setOauthUsername] = useState("");
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email.trim()) {
+      errors.email = "Email is required";
+    } else if (!emailRegex.test(email)) {
+      errors.email = "Please enter a valid email address";
+    }
 
-  // Handle submission of sign-up form
-  const onSignUpPress = async () => {
-    if (!isLoaded) return;
+    // Password validation
+    if (!password) {
+      errors.password = "Password is required";
+    } else if (password.length < 8) {
+      errors.password = "Password must be at least 8 characters";
+    } else if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(password)) {
+      errors.password =
+        "Password must contain uppercase, lowercase, and number";
+    }
+
+    if (!confirmPassword) {
+      errors.confirmPassword = "Please confirm your password";
+    } else if (password !== confirmPassword) {
+      errors.confirmPassword = "Passwords do not match";
+    }
+
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleDetailsSubmit = async () => {
+    if (!validateDetailsStep() || !signUp) return;
 
     try {
+      setIsLoading(true);
+
+      // Create signup with basic info
       await signUp.create({
-        emailAddress,
-        password,
-        firstName,
-        lastName,
-        username,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        username: username.trim(),
       });
 
-      await signUp.prepareEmailAddressVerification({ strategy: "email_code" });
-      setPendingVerification(true);
-    } catch (err) {
-      console.error(JSON.stringify(err, null, 2));
-      Alert.alert("Error", "Failed to create account. Please try again.");
-    }
-  };
+      // Move to credentials step
+      setCurrentStep("credentials");
+    } catch (err: any) {
+      console.error("Details step error:", JSON.stringify(err, null, 2));
 
-  // Handle submission of verification form
-  const onVerifyPress = async () => {
-    if (!isLoaded) return;
-
-    try {
-      const signUpAttempt = await signUp.attemptEmailAddressVerification({
-        code,
-      });
-
-      if (signUpAttempt.status === "complete") {
-        await setActive({ session: signUpAttempt.createdSessionId });
-        router.replace("/");
-      } else {
-        console.error(JSON.stringify(signUpAttempt, null, 2));
-      }
-    } catch (err) {
-      console.error(JSON.stringify(err, null, 2));
-      Alert.alert("Error", "Failed to verify email. Please check your code.");
-    }
-  };
-
-  const handleOAuthFlow = useCallback(async (strategy: OAuthStrategy) => {
-    try {
-      const { createdSessionId, setActive, signIn, signUp } =
-        await startSSOFlow({
-          strategy,
-          redirectUrl: AuthSession.makeRedirectUri(),
-        });
-
-      if (createdSessionId) {
-        // User successfully signed in or completed sign-up
-        setActive!({ session: createdSessionId });
-        router.replace("/");
-      } else if (signUp) {
-        // New user needs to complete additional fields
-        console.log("SignUp object:", signUp);
-
-        // Check if we have missing fields
-        if (signUp.status === "missing_requirements") {
-          // Pre-populate fields from OAuth provider if available
-          setOauthFirstName(signUp.firstName || "");
-          setOauthLastName(signUp.lastName || "");
-          setOauthUsername(signUp.username || "");
-          setOauthSignUp(signUp);
+      if (err?.clerkError && err?.errors?.length > 0) {
+        const clerkError = err.errors[0];
+        if (clerkError.code === "form_identifier_exists") {
+          setFieldErrors((prev) => ({
+            ...prev,
+            username: "This username is already taken. Please try another.",
+          }));
+        } else {
+          setErrorMessage(clerkError.message || "An error occurred");
         }
-      } else if (signIn) {
-        // Handle sign-in requirements (like MFA)
-        console.log("Additional sign-in steps required:", signIn);
+      } else {
+        setErrorMessage("An error occurred. Please try again.");
       }
-    } catch (err) {
-      console.error("OAuth error:", JSON.stringify(err, null, 2));
-      Alert.alert("Error", "Failed to authenticate. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
-  }, []);
+  };
 
-  const onGoogleSignUp = useCallback(
-    () => handleOAuthFlow(AuthStrategy.GOOGLE as OAuthStrategy),
-    [handleOAuthFlow]
-  );
-  const onAppleSignUp = useCallback(
-    () => handleOAuthFlow(AuthStrategy.APPLE as OAuthStrategy),
-    [handleOAuthFlow]
-  );
-  const onMicrosoftSignUp = useCallback(
-    () => handleOAuthFlow(AuthStrategy.MICROSOFT as OAuthStrategy),
-    [handleOAuthFlow]
-  );
+  const handleCredentialsSubmit = async () => {
+    if (!validateCredentialsStep() || !signUp) return;
 
-  // Complete OAuth sign-up with additional fields
-  const completeOAuthSignUp = async () => {
-    if (!oauthSignUp) return;
+    try {
+      setIsLoading(true);
 
-    // Validate required fields
-    if (
-      !oauthFirstName.trim() ||
-      !oauthLastName.trim() ||
-      !oauthUsername.trim()
-    ) {
-      Alert.alert(
-        "Error",
-        "Please fill in all required fields (First Name, Last Name, and Username)."
-      );
+      // Update signup with email and password
+      await signUp.update({
+        emailAddress: email.trim(),
+        password: password,
+      });
+
+      // Prepare email verification
+      await signUp.prepareEmailAddressVerification();
+
+      // Move to verification step
+      setCurrentStep("verification");
+    } catch (err: any) {
+      console.error("Credentials step error:", JSON.stringify(err, null, 2));
+
+      if (err?.clerkError && err?.errors?.length > 0) {
+        const clerkError = err.errors[0];
+        setErrorMessage(clerkError.message || "An error occurred");
+      } else {
+        setErrorMessage("An error occurred. Please try again.");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerificationSubmit = async () => {
+    if (!otpCode.trim() || !signUp) {
+      setErrorMessage("Please enter the verification code");
       return;
     }
 
     try {
-      // Update the sign-up with missing fields
-      const updatedSignUp = await oauthSignUp.update({
-        firstName: oauthFirstName.trim(),
-        lastName: oauthLastName.trim(),
-        username: oauthUsername.trim(),
+      setIsLoading(true);
+
+      // Attempt email verification
+      const attemptVerification = await signUp.attemptEmailAddressVerification({
+        code: otpCode.trim(),
       });
 
-      if (updatedSignUp.status === "complete") {
-        if (setActive && updatedSignUp.createdSessionId) {
-          await setActive({ session: updatedSignUp.createdSessionId });
+      if (attemptVerification.status === "complete") {
+        if (setActive && attemptVerification.createdSessionId) {
+          await setActive({ session: attemptVerification.createdSessionId });
           router.replace("/");
-        } else {
-          console.error("setActive or createdSessionId is not available");
-          Alert.alert("Error", "Failed to complete sign-up. Please try again.");
         }
       } else {
-        console.error("Sign-up still incomplete:", updatedSignUp);
-        Alert.alert("Error", "Failed to complete sign-up. Please try again.");
+        setErrorMessage("Verification failed. Please try again.");
       }
-    } catch (err) {
-      console.error(
-        "Error completing OAuth sign-up:",
-        JSON.stringify(err, null, 2)
-      );
-      Alert.alert("Error", "Failed to complete sign-up. Please try again.");
+    } catch (err: any) {
+      console.error("Verification error:", JSON.stringify(err, null, 2));
+
+      if (err?.clerkError && err?.errors?.length > 0) {
+        const clerkError = err.errors[0];
+        setErrorMessage(clerkError.message || "Verification failed");
+      } else {
+        setErrorMessage("Verification failed. Please try again.");
+      }
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // If we're in OAuth completion mode, show the completion form
-  if (oauthSignUp) {
+  const renderDetailsStep = () => (
+    <View style={styles.inputContainer}>
+      <Text style={styles.stepTitle}>Tell us about yourself</Text>
+      <Text style={styles.stepSubtitle}>
+        Let's start with your basic information
+      </Text>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>First Name *</Text>
+        <TextInput
+          placeholder="Your first name"
+          style={[styles.input, fieldErrors.firstName && styles.inputError]}
+          value={firstName}
+          onChangeText={setFirstName}
+          autoCapitalize="words"
+        />
+        {fieldErrors.firstName && (
+          <Text style={styles.errorText}>{fieldErrors.firstName}</Text>
+        )}
+      </View>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>Last Name *</Text>
+        <TextInput
+          placeholder="Your last name"
+          style={[styles.input, fieldErrors.lastName && styles.inputError]}
+          value={lastName}
+          onChangeText={setLastName}
+          autoCapitalize="words"
+        />
+        {fieldErrors.lastName && (
+          <Text style={styles.errorText}>{fieldErrors.lastName}</Text>
+        )}
+      </View>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>Username *</Text>
+        <TextInput
+          placeholder="Choose a username"
+          style={[styles.input, fieldErrors.username && styles.inputError]}
+          value={username}
+          onChangeText={setUsername}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {fieldErrors.username && (
+          <Text style={styles.errorText}>{fieldErrors.username}</Text>
+        )}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.solidButton, isLoading && styles.disabledButton]}
+        onPress={handleDetailsSubmit}
+        disabled={isLoading}
+      >
+        {isLoading ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={styles.solidButtonText}>Continue</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderCredentialsStep = () => (
+    <View style={styles.inputContainer}>
+      <Text style={styles.stepTitle}>Create your account</Text>
+      <Text style={styles.stepSubtitle}>Set up your email and password</Text>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>Email Address *</Text>
+        <TextInput
+          placeholder="your.email@example.com"
+          style={[styles.input, fieldErrors.email && styles.inputError]}
+          value={email}
+          onChangeText={setEmail}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+        />
+        {fieldErrors.email && (
+          <Text style={styles.errorText}>{fieldErrors.email}</Text>
+        )}
+      </View>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>Password *</Text>
+        <TextInput
+          placeholder="Create a secure password"
+          style={[styles.input, fieldErrors.password && styles.inputError]}
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          autoComplete="new-password"
+        />
+        {fieldErrors.password && (
+          <Text style={styles.errorText}>{fieldErrors.password}</Text>
+        )}
+      </View>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>Confirm Password *</Text>
+        <TextInput
+          placeholder="Confirm your password"
+          style={[
+            styles.input,
+            fieldErrors.confirmPassword && styles.inputError,
+          ]}
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
+          secureTextEntry
+          autoComplete="new-password"
+        />
+        {fieldErrors.confirmPassword && (
+          <Text style={styles.errorText}>{fieldErrors.confirmPassword}</Text>
+        )}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.solidButton, isLoading && styles.disabledButton]}
+        onPress={handleCredentialsSubmit}
+        disabled={isLoading}
+      >
+        {isLoading ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={styles.solidButtonText}>Send Verification Code</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderVerificationStep = () => (
+    <View style={styles.inputContainer}>
+      <Text style={styles.stepTitle}>Verify your email</Text>
+      <Text style={styles.stepSubtitle}>
+        We've sent a verification code to {email}
+      </Text>
+
+      <View style={styles.fieldContainer}>
+        <Text style={styles.fieldLabel}>Verification Code *</Text>
+        <TextInput
+          placeholder="Enter the 6-digit code"
+          style={[styles.input, fieldErrors.otp && styles.inputError]}
+          value={otpCode}
+          onChangeText={setOtpCode}
+          keyboardType="number-pad"
+          maxLength={6}
+        />
+        {fieldErrors.otp && (
+          <Text style={styles.errorText}>{fieldErrors.otp}</Text>
+        )}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.solidButton, isLoading && styles.disabledButton]}
+        onPress={handleVerificationSubmit}
+        disabled={isLoading}
+      >
+        {isLoading ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={styles.solidButtonText}>Verify & Complete</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  if (!isLoaded) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <KeyboardAvoidingView
-          style={styles.container}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-        >
-          <ScrollView contentContainerStyle={styles.scrollContent}>
-            <View style={styles.content}>
-              <View style={styles.header}>
-                <Text style={styles.title}>Complete Your Profile</Text>
-                <Text style={styles.subtitle}>
-                  Just a few more details to get started
-                </Text>
-              </View>
-
-              <View style={styles.form}>
-                <View style={styles.nameRow}>
-                  <View style={[styles.inputContainer, styles.nameInput]}>
-                    <Text style={styles.label}>First Name *</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={oauthFirstName}
-                      placeholder="Enter first name"
-                      placeholderTextColor="#9CA3AF"
-                      onChangeText={setOauthFirstName}
-                    />
-                  </View>
-
-                  <View style={[styles.inputContainer, styles.nameInput]}>
-                    <Text style={styles.label}>Last Name *</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={oauthLastName}
-                      placeholder="Enter last name"
-                      placeholderTextColor="#9CA3AF"
-                      onChangeText={setOauthLastName}
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.inputContainer}>
-                  <Text style={styles.label}>Username *</Text>
-                  <TextInput
-                    style={styles.input}
-                    autoCapitalize="none"
-                    value={oauthUsername}
-                    placeholder="Enter username"
-                    placeholderTextColor="#9CA3AF"
-                    onChangeText={setOauthUsername}
-                  />
-                </View>
-
-                <TouchableOpacity
-                  style={styles.button}
-                  onPress={completeOAuthSignUp}
-                >
-                  <Text style={styles.buttonText}>Complete Sign Up</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={() => setOauthSignUp(null)}
-                >
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
-
-  if (pendingVerification) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <KeyboardAvoidingView
-          style={styles.container}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-        >
-          <View style={styles.content}>
-            <View style={styles.header}>
-              <Text style={styles.title}>Check Your Email</Text>
-              <Text style={styles.subtitle}>
-                We've sent a verification code to {emailAddress}
-              </Text>
-            </View>
-
-            <View style={styles.form}>
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Verification Code</Text>
-                <TextInput
-                  style={styles.input}
-                  value={code}
-                  placeholder="Enter verification code"
-                  placeholderTextColor="#9CA3AF"
-                  onChangeText={(code) => setCode(code)}
-                />
-              </View>
-
-              <TouchableOpacity style={styles.button} onPress={onVerifyPress}>
-                <Text style={styles.buttonText}>Verify Email</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#000" />
+          <Text style={styles.loadingText}>Loading...</Text>
+        </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          <View style={styles.content}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }}>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <View style={styles.container}>
             <View style={styles.header}>
-              <Text style={styles.title}>Create Account</Text>
-              <Text style={styles.subtitle}>Sign up to get started</Text>
-            </View>
-
-            <View style={styles.form}>
-              <View style={styles.nameRow}>
-                <View style={[styles.inputContainer, styles.nameInput]}>
-                  <Text style={styles.label}>First Name</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={firstName}
-                    placeholder="Enter first name"
-                    placeholderTextColor="#9CA3AF"
-                    onChangeText={(firstName) => setFirstName(firstName)}
-                  />
-                </View>
-
-                <View style={[styles.inputContainer, styles.nameInput]}>
-                  <Text style={styles.label}>Last Name</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={lastName}
-                    placeholder="Enter last name"
-                    placeholderTextColor="#9CA3AF"
-                    onChangeText={(lastName) => setLastName(lastName)}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Username</Text>
-                <TextInput
-                  style={styles.input}
-                  autoCapitalize="none"
-                  value={username}
-                  placeholder="Enter username"
-                  placeholderTextColor="#9CA3AF"
-                  onChangeText={(username) => setUsername(username)}
-                />
-              </View>
-
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Email</Text>
-                <TextInput
-                  style={styles.input}
-                  autoCapitalize="none"
-                  value={emailAddress}
-                  placeholder="Enter your email"
-                  placeholderTextColor="#9CA3AF"
-                  onChangeText={(email) => setEmailAddress(email)}
-                />
-              </View>
-
-              <View style={styles.inputContainer}>
-                <Text style={styles.label}>Password</Text>
-                <TextInput
-                  style={styles.input}
-                  value={password}
-                  placeholder="Enter your password"
-                  placeholderTextColor="#9CA3AF"
-                  secureTextEntry={true}
-                  onChangeText={(password) => setPassword(password)}
-                />
-              </View>
-
-              <TouchableOpacity style={styles.button} onPress={onSignUpPress}>
-                <Text style={styles.buttonText}>Create Account</Text>
+              <TouchableOpacity
+                style={styles.backButton}
+                onPress={() => {
+                  if (currentStep === "credentials") {
+                    setCurrentStep("details");
+                  } else if (currentStep === "verification") {
+                    setCurrentStep("credentials");
+                  } else {
+                    router.back();
+                  }
+                }}
+              >
+                <Text style={styles.backButtonText}>← Back</Text>
               </TouchableOpacity>
 
-              <View style={styles.divider}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or continue with</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              <View style={styles.ssoButtons}>
-                <TouchableOpacity
-                  style={styles.ssoButton}
-                  onPress={onGoogleSignUp}
-                >
-                  <Text style={styles.ssoButtonText}>Google</Text>
-                </TouchableOpacity>
-
-                {Platform.OS === "ios" && (
-                  <TouchableOpacity
-                    style={styles.ssoButton}
-                    onPress={onAppleSignUp}
-                  >
-                    <Text style={styles.ssoButtonText}>Apple</Text>
-                  </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  style={styles.ssoButton}
-                  onPress={onMicrosoftSignUp}
-                >
-                  <Text style={styles.ssoButtonText}>Microsoft</Text>
-                </TouchableOpacity>
+              <View style={styles.progressContainer}>
+                <View
+                  style={[
+                    styles.progressDot,
+                    currentStep === "details" && styles.progressDotActive,
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.progressDot,
+                    currentStep === "credentials" && styles.progressDotActive,
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.progressDot,
+                    currentStep === "verification" && styles.progressDotActive,
+                  ]}
+                />
               </View>
             </View>
 
-            <View style={styles.footer}>
-              <Text style={styles.footerText}>Already have an account?</Text>
-              <Link href="/sign-in" style={styles.link}>
-                <Text style={styles.linkText}>Sign in</Text>
-              </Link>
-            </View>
+            {errorMessage && (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{errorMessage}</Text>
+              </View>
+            )}
+
+            {currentStep === "details" && renderDetailsStep()}
+            {currentStep === "credentials" && renderCredentialsStep()}
+            {currentStep === "verification" && renderVerificationStep()}
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </TouchableWithoutFeedback>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
   container: {
     flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
     justifyContent: "center",
-  },
-  content: {
-    paddingHorizontal: 24,
-    paddingVertical: 20,
+    alignItems: "center",
+    padding: 16,
+    backgroundColor: "#fff",
   },
   header: {
-    alignItems: "center",
-    marginBottom: 32,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: "bold",
-    color: "#1F2937",
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: "#6B7280",
-    textAlign: "center",
-  },
-  form: {
-    marginBottom: 32,
-  },
-  nameRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  nameInput: {
-    flex: 1,
-  },
-  inputContainer: {
-    marginBottom: 16,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#374151",
-    marginBottom: 8,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#D1D5DB",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    backgroundColor: "#F9FAFB",
-  },
-  button: {
-    backgroundColor: "#3B82F6",
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: "center",
-    marginTop: 8,
-  },
-  buttonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  cancelButton: {
-    backgroundColor: "transparent",
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: "center",
-    marginTop: 8,
-  },
-  cancelButtonText: {
-    color: "#6B7280",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 24,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#E5E7EB",
-  },
-  dividerText: {
-    marginHorizontal: 16,
-    fontSize: 14,
-    color: "#6B7280",
-  },
-  ssoButtons: {
+    width: "100%",
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
-  },
-  ssoButton: {
-    flex: 1,
-    backgroundColor: "#F3F4F6",
-    borderRadius: 12,
-    paddingVertical: 12,
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#D1D5DB",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    marginBottom: 20,
   },
-  ssoButtonText: {
-    color: "#374151",
-    fontSize: 14,
-    fontWeight: "600",
+  backButton: {
+    padding: 8,
   },
-  footer: {
+  backButtonText: {
+    fontSize: 16,
+    color: "#000",
+  },
+  progressContainer: {
     flexDirection: "row",
+    justifyContent: "space-between",
+    width: "100%",
+    marginTop: 10,
+  },
+  progressDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#ccc",
+  },
+  progressDotActive: {
+    backgroundColor: "#000",
+  },
+  errorContainer: {
+    backgroundColor: "#ffebee",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 20,
+    alignItems: "center",
+  },
+  errorText: {
+    color: "#d32f2f",
+    fontSize: 14,
+    textAlign: "center",
+  },
+  inputContainer: {
+    width: "100%",
+    paddingHorizontal: 16,
+  },
+  stepTitle: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  stepSubtitle: {
+    fontSize: 16,
+    color: "#838383",
+    marginBottom: 32,
+    textAlign: "center",
+  },
+  fieldContainer: {
+    width: "100%",
+    marginBottom: 16,
+  },
+  fieldLabel: {
+    fontSize: 14,
+    fontWeight: "medium",
+    marginBottom: 8,
+    color: "#333",
+  },
+  input: {
+    width: "100%",
+    height: isSmallDevice ? 40 : 48,
+    paddingHorizontal: 16,
+    marginBottom: 4,
+    borderWidth: 1,
+    borderColor: "#000",
+    borderRadius: 8,
+    fontFamily: "SatoshiMedium",
+    fontSize: 16,
+  },
+  inputError: {
+    borderColor: "red",
+  },
+
+  solidButton: {
+    backgroundColor: "#000",
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: "center",
+  },
+  solidButtonText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#fff",
+  },
+  disabledButton: {
+    opacity: 0.7,
+  },
+  loadingContainer: {
+    flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    gap: 4,
+    backgroundColor: "#fff",
   },
-  footerText: {
+  loadingText: {
+    marginTop: 10,
     fontSize: 16,
-    color: "#6B7280",
-  },
-  link: {
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-  },
-  linkText: {
-    fontSize: 16,
-    color: "#3B82F6",
-    fontWeight: "600",
+    color: "#000",
   },
 });
