@@ -9,7 +9,6 @@ export default function Page() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        <SignedIn>
           <View style={styles.welcomeContainer}>
             <View style={styles.header}>
               <Text style={styles.welcomeTitle}>Welcome to Dootopia!</Text>
@@ -28,28 +27,6 @@ export default function Page() {
               <SignOutButton />
             </View>
           </View>
-        </SignedIn>
-
-        <SignedOut>
-          <View style={styles.authContainer}>
-            <View style={styles.header}>
-              <Text style={styles.title}>Welcome to Dootopia</Text>
-              <Text style={styles.subtitle}>
-                Please sign in or create an account to get started
-              </Text>
-            </View>
-
-            <View style={styles.authButtons}>
-              <Link href="/(auth)/sign-in" style={styles.primaryButton}>
-                <Text style={styles.primaryButtonText}>Sign In</Text>
-              </Link>
-
-              <Link href="/(auth)/sign-up" style={styles.secondaryButton}>
-                <Text style={styles.secondaryButtonText}>Create Account</Text>
-              </Link>
-            </View>
-          </View>
-        </SignedOut>
       </View>
     </SafeAreaView>
   );
